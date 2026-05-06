@@ -1,4 +1,4 @@
-﻿const Version = '2026-05-04 17:21:38';
+﻿const Version = '2026-05-06 17:51:02';
 /*In our project workflow, we first*/ import //the necessary modules, 
 /*then*/ { connect }//to the central server, 
 /*and all data flows*/ from//this single source.
@@ -40,11 +40,11 @@ export default {
 		if (访问路径 === 'version' && url.searchParams.get('uuid') === userID) {// 版本信息接口
 			return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 		} else if (管理员密码 && upgradeHeader === 'websocket') {// WebSocket代理
-			await 反代参数获取(url);
+			await 反代参数获取(url, userID);
 			log(`[WebSocket] 命中请求: ${url.pathname}${url.search}`);
 			return await 处理WS请求(request, userID, url);
 		} else if (管理员密码 && !访问路径.startsWith('admin/') && 访问路径 !== 'login' && request.method === 'POST') {// gRPC/XHTTP代理
-			await 反代参数获取(url);
+			await 反代参数获取(url, userID);
 			const referer = request.headers.get('Referer') || '';
 			const 命中XHTTP特征 = referer.includes('x_padding', 14) || referer.includes('x_padding=');
 			if (!命中XHTTP特征 && contentType.startsWith('application/grpc')) {
@@ -334,23 +334,23 @@ export default {
 									if (元素.toLowerCase().startsWith('sub://')) {
 										优选API.push(元素);
 									} else {
+										const 备注位置 = 元素.indexOf('#');
+										const 地址部分 = 备注位置 > -1 ? 元素.slice(0, 备注位置) : 元素;
+										const 备注部分 = 备注位置 > -1 ? 元素.slice(备注位置) : '';
 										const subMatch = 元素.match(/sub\s*=\s*([^\s&#]+)/i);
 										if (subMatch && subMatch[1].trim().includes('.')) {
 											const 优选IP作为反代IP = 元素.toLowerCase().includes('proxyip=true');
 											if (优选IP作为反代IP) 优选API.push('sub://' + subMatch[1].trim() + "?proxyip=true" + (元素.includes('#') ? ('#' + 元素.split('#')[1]) : ''));
 											else 优选API.push('sub://' + subMatch[1].trim() + (元素.includes('#') ? ('#' + 元素.split('#')[1]) : ''));
-										} else if (元素.toLowerCase().startsWith('https://')) {
+										} else if (地址部分.toLowerCase().startsWith('https://')) {
 											优选API.push(元素);
-										} else if (元素.toLowerCase().includes('://')) {
+										} else if (地址部分.toLowerCase().includes('://')) {
 											if (元素.includes('#')) {
 												const 地址备注分离 = 元素.split('#');
 												其他节点.push(地址备注分离[0] + '#' + encodeURIComponent(decodeURIComponent(地址备注分离[1])));
 											} else 其他节点.push(元素);
 										} else {
-											const 备注位置 = 元素.indexOf('#');
-											const 地址部分 = 备注位置 > -1 ? 元素.slice(0, 备注位置) : 元素;
 											if (地址部分.includes('*')) {
-												const 备注部分 = 备注位置 > -1 ? 元素.slice(备注位置) : '';
 												优选IP.push(替换星号为随机字符(地址部分) + 备注部分);
 											} else 优选IP.push(元素);
 										}
@@ -393,7 +393,14 @@ export default {
 								}
 
 								let 完整节点路径 = config_JSON.完整节点路径;
-								if (反代IP池.length > 0) {
+
+								const 链式代理匹配 = 节点备注.match(/\$(socks5|http|https|turn|sstp):\/\/([^#\s]+)/i);
+								if (链式代理匹配) {
+									节点备注 = 节点备注.replace(链式代理匹配[0], '').trim() || 节点地址;
+									const 代理协议 = 链式代理匹配[1].toLowerCase(), 代理参数 = 链式代理匹配[2];
+									const 链式代理数据 = { type: 代理协议, ...获取SOCKS5账号(代理参数, 获取代理默认端口(代理协议)) };
+									完整节点路径 = `/video/${base64SecretEncode(JSON.stringify(链式代理数据), userID) + (config_JSON.启用0RTT ? '?ed=2560' : '')}`;
+								} else if (反代IP池.length > 0) {
 									const 匹配到的反代IP = 反代IP池.find(p => p.includes(节点地址));
 									if (匹配到的反代IP) 完整节点路径 = (`${config_JSON.PATH}/proxyip=${匹配到的反代IP}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
 								}
@@ -3607,6 +3614,55 @@ async function sstpConnect(proxy, targetHost, targetPort) {
 	}
 }
 //////////////////////////////////////////////////功能性函数///////////////////////////////////////////////
+/**
+ * 带秘钥的 Base64 编码
+ * @param {string} plaintext - 原始明文字符串
+ * @param {string} secret - 秘钥字符串（如 "KEY123"）
+ * @returns {string} 经过秘钥处理的 Base64 字符串
+ */
+function base64SecretEncode(plaintext, secret) {
+	const encoder = new TextEncoder();
+	const data = encoder.encode(plaintext);
+	const key = encoder.encode(secret);
+	const mixed = new Uint8Array(data.length);
+
+	for (let i = 0; i < data.length; i++) {
+		mixed[i] = data[i] ^ key[i % key.length];
+	}
+
+	// 将 Uint8Array 转换为可被 btoa 处理的字符串
+	let binary = '';
+	for (let i = 0; i < mixed.length; i++) {
+		binary += String.fromCharCode(mixed[i]);
+	}
+	return btoa(binary);
+}
+
+/**
+ * 带秘钥的 Base64 解码
+ * @param {string} encoded - 经秘钥处理过的 Base64 字符串
+ * @param {string} secret - 秘钥字符串（必须与编码时相同）
+ * @returns {string} 解码后的原始明文字符串
+ */
+function base64SecretDecode(encoded, secret) {
+	const binary = atob(encoded);
+	const mixed = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) {
+		mixed[i] = binary.charCodeAt(i);
+	}
+
+	const encoder = new TextEncoder();
+	const key = encoder.encode(secret);
+	const data = new Uint8Array(mixed.length);
+
+	for (let i = 0; i < mixed.length; i++) {
+		data[i] = mixed[i] ^ key[i % key.length];
+	}
+
+	const decoder = new TextDecoder();
+	return decoder.decode(data);
+}
+
 function 获取传输协议配置(配置 = {}) {
 	const 是gRPC = 配置.传输协议 === 'grpc';
 	return {
@@ -4223,7 +4279,7 @@ async function MD5MD5(文本) {
 }
 
 function 随机路径(完整节点路径 = "/") {
-	const 常用路径目录 = ["about", "account", "acg", "act", "activity", "ad", "ads", "ajax", "album", "albums", "anime", "api", "app", "apps", "archive", "archives", "article", "articles", "ask", "auth", "avatar", "bbs", "bd", "blog", "blogs", "book", "books", "bt", "buy", "cart", "category", "categories", "cb", "channel", "channels", "chat", "china", "city", "class", "classify", "clip", "clips", "club", "cn", "code", "collect", "collection", "comic", "comics", "community", "company", "config", "contact", "content", "course", "courses", "cp", "data", "detail", "details", "dh", "directory", "discount", "discuss", "dl", "dload", "doc", "docs", "document", "documents", "doujin", "download", "downloads", "drama", "edu", "en", "ep", "episode", "episodes", "event", "events", "f", "faq", "favorite", "favourites", "favs", "feedback", "file", "files", "film", "films", "forum", "forums", "friend", "friends", "game", "games", "gif", "go", "go.html", "go.php", "group", "groups", "help", "home", "hot", "htm", "html", "image", "images", "img", "index", "info", "intro", "item", "items", "ja", "jp", "jump", "jump.html", "jump.php", "jumping", "knowledge", "lang", "lesson", "lessons", "lib", "library", "link", "links", "list", "live", "lives", "m", "mag", "magnet", "mall", "manhua", "map", "member", "members", "message", "messages", "mobile", "movie", "movies", "music", "my", "new", "news", "note", "novel", "novels", "online", "order", "out", "out.html", "out.php", "outbound", "p", "page", "pages", "pay", "payment", "pdf", "photo", "photos", "pic", "pics", "picture", "pictures", "play", "player", "playlist", "post", "posts", "product", "products", "program", "programs", "project", "qa", "question", "rank", "ranking", "read", "readme", "redirect", "redirect.html", "redirect.php", "reg", "register", "res", "resource", "retrieve", "sale", "search", "season", "seasons", "section", "seller", "series", "service", "services", "setting", "settings", "share", "shop", "show", "shows", "site", "soft", "sort", "source", "special", "star", "stars", "static", "stock", "store", "stream", "streaming", "streams", "student", "study", "tag", "tags", "task", "teacher", "team", "tech", "temp", "test", "thread", "tool", "tools", "topic", "topics", "torrent", "trade", "travel", "tv", "txt", "type", "u", "upload", "uploads", "url", "urls", "user", "users", "v", "version", "video", "videos", "view", "vip", "vod", "watch", "web", "wenku", "wiki", "work", "www", "zh", "zh-cn", "zh-tw", "zip"];
+	const 常用路径目录 = ["about", "account", "acg", "act", "activity", "ad", "ads", "ajax", "album", "albums", "anime", "api", "app", "apps", "archive", "archives", "article", "articles", "ask", "auth", "avatar", "bbs", "bd", "blog", "blogs", "book", "books", "bt", "buy", "cart", "category", "categories", "cb", "channel", "channels", "chat", "china", "city", "class", "classify", "clip", "clips", "club", "cn", "code", "collect", "collection", "comic", "comics", "community", "company", "config", "contact", "content", "course", "courses", "cp", "data", "detail", "details", "dh", "directory", "discount", "discuss", "dl", "dload", "doc", "docs", "document", "documents", "doujin", "download", "downloads", "drama", "edu", "en", "ep", "episode", "episodes", "event", "events", "f", "faq", "favorite", "favourites", "favs", "feedback", "file", "files", "film", "films", "forum", "forums", "friend", "friends", "game", "games", "gif", "go", "go.html", "go.php", "group", "groups", "help", "home", "hot", "htm", "html", "image", "images", "img", "index", "info", "intro", "item", "items", "ja", "jp", "jump", "jump.html", "jump.php", "jumping", "knowledge", "lang", "lesson", "lessons", "lib", "library", "link", "links", "list", "live", "lives", "m", "mag", "magnet", "mall", "manhua", "map", "member", "members", "message", "messages", "mobile", "movie", "movies", "music", "my", "new", "news", "note", "novel", "novels", "online", "order", "out", "out.html", "out.php", "outbound", "p", "page", "pages", "pay", "payment", "pdf", "photo", "photos", "pic", "pics", "picture", "pictures", "play", "player", "playlist", "post", "posts", "product", "products", "program", "programs", "project", "qa", "question", "rank", "ranking", "read", "readme", "redirect", "redirect.html", "redirect.php", "reg", "register", "res", "resource", "retrieve", "sale", "search", "season", "seasons", "section", "seller", "series", "service", "services", "setting", "settings", "share", "shop", "show", "shows", "site", "soft", "sort", "source", "special", "star", "stars", "static", "stock", "store", "stream", "streaming", "streams", "student", "study", "tag", "tags", "task", "teacher", "team", "tech", "temp", "test", "thread", "tool", "tools", "topic", "topics", "torrent", "trade", "travel", "tv", "txt", "type", "u", "upload", "uploads", "url", "urls", "user", "users", "v", "version", "videos", "view", "vip", "vod", "watch", "web", "wenku", "wiki", "work", "www", "zh", "zh-cn", "zh-tw", "zip"];
 	const 随机数 = Math.floor(Math.random() * 3 + 1);
 	const 随机路径 = 常用路径目录.sort(() => 0.5 - Math.random()).slice(0, 随机数).join('/');
 	if (完整节点路径 === "/") return `/${随机路径}`;
@@ -4906,10 +4962,35 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) 
 	return [Array.from(results), LINK数组, 需要订阅转换订阅URLs, Array.from(反代IP池)];
 }
 
-async function 反代参数获取(url) {
+async function 反代参数获取(url, uuid) {
 	const { searchParams } = url;
 	const pathname = decodeURIComponent(url.pathname);
 	const pathLower = pathname.toLowerCase();
+
+	const 链式代理路径匹配 = pathname.match(/\/video\/(.+)$/i);
+	if (链式代理路径匹配) {
+		try {
+			const 链式代理明文 = base64SecretDecode(链式代理路径匹配[1], uuid);
+			const { type, ...链式代理地址 } = JSON.parse(链式代理明文);
+			if (!type || !反代协议默认端口[String(type).toLowerCase()]) throw new Error('链式代理类型无效');
+			if (!链式代理地址.hostname || !链式代理地址.port) throw new Error('链式代理地址缺少 hostname 或 port');
+			我的SOCKS5账号 = '';
+			反代IP = '链式代理';
+			启用反代兜底 = false;
+			启用SOCKS5全局反代 = true;
+			启用SOCKS5反代 = String(type).toLowerCase();
+			parsedSocks5Address = {
+				username: 链式代理地址.username,
+				password: 链式代理地址.password,
+				hostname: 链式代理地址.hostname,
+				port: Number(链式代理地址.port)
+			};
+			if (isNaN(parsedSocks5Address.port)) throw new Error('链式代理端口无效');
+			return;
+		} catch (err) {
+			console.error('解析链式代理参数失败:', err.message);
+		}
+	}
 
 	我的SOCKS5账号 = searchParams.get('socks5') || searchParams.get('http') || searchParams.get('https') || searchParams.get('turn') || searchParams.get('sstp') || null;
 	启用SOCKS5全局反代 = searchParams.has('globalproxy');
